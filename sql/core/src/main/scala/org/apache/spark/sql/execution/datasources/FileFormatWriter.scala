@@ -125,9 +125,10 @@ object FileFormatWriter extends Logging {
     }
 
     val caseInsensitiveOptions = CaseInsensitiveMap(options)
-
+    // BDP Modify, Parquet data source support null data type.
     val dataSchema = dataColumns.toStructType
-    DataSourceUtils.verifySchema(fileFormat, dataSchema)
+    // DataSourceUtils.verifySchema(fileFormat, dataSchema)
+
     // Note: prepareWrite has side effect. It sets "job".
     val outputWriterFactory =
       fileFormat.prepareWrite(sparkSession, job, caseInsensitiveOptions, dataSchema)
