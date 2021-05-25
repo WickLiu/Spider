@@ -21,14 +21,11 @@ import java.net.URI
 import java.util.Locale
 import java.util.concurrent.Callable
 import javax.annotation.concurrent.GuardedBy
-
 import scala.collection.mutable
 import scala.util.{Failure, Success, Try}
-
 import com.google.common.cache.{Cache, CacheBuilder}
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst._
@@ -41,7 +38,7 @@ import org.apache.spark.sql.catalyst.util.StringUtils
 import org.apache.spark.sql.connector.catalog.CatalogManager
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.StaticSQLConf.GLOBAL_TEMP_DATABASE
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 import org.apache.spark.util.Utils
 
 object SessionCatalog {
@@ -303,6 +300,13 @@ class SessionCatalog(
     val tableIdentifier = TableIdentifier(table, Some(db))
     validateName(table)
 
+    val fixedSchema = StructType(tableDefinition.schema.map { f =>
+      if (f.dataType == DataTypes.NullType) {
+        StructField(f.name, DataTypes.StringType)
+      } else {
+        f
+      }
+    })
     val newTableDefinition = if (tableDefinition.storage.locationUri.isDefined
       && !tableDefinition.storage.locationUri.get.isAbsolute) {
       // make the location of the table qualified.
@@ -310,9 +314,11 @@ class SessionCatalog(
         makeQualifiedPath(tableDefinition.storage.locationUri.get)
       tableDefinition.copy(
         storage = tableDefinition.storage.copy(locationUri = Some(qualifiedTableLocation)),
-        identifier = tableIdentifier)
+        identifier = tableIdentifier,
+        schema = fixedSchema
+      )
     } else {
-      tableDefinition.copy(identifier = tableIdentifier)
+      tableDefinition.copy(identifier = tableIdentifier, schema = fixedSchema)
     }
 
     requireDbExists(db)
