@@ -56,6 +56,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.parser.{CatalystSqlParser, ParseException}
 import org.apache.spark.sql.connector.catalog.SupportsNamespaces._
 import org.apache.spark.sql.execution.QueryExecutionException
+import org.apache.spark.sql.execution.command.DDLUtils
 import org.apache.spark.sql.hive.HiveExternalCatalog
 import org.apache.spark.sql.hive.HiveExternalCatalog.{DATASOURCE_SCHEMA, DATASOURCE_SCHEMA_NUMPARTS, DATASOURCE_SCHEMA_PART_PREFIX}
 import org.apache.spark.sql.hive.HiveUtils
@@ -103,6 +104,10 @@ private[hive] class HiveClientImpl(
 
   // Circular buffer to hold what hive prints to STDOUT and ERR.  Only printed when failures occur.
   private val outputBuffer = new CircularBuffer()
+  private val notAllowedSql = Seq(
+    """drop\s+database""".r,
+    """show\s+tables""".r
+  )
 
   private val shim = version match {
     case hive.v12 => new Shim_v0_12()
@@ -472,7 +477,7 @@ private[hive] class HiveClientImpl(
     }
 
     val properties = Option(h.getParameters).map(_.asScala.toMap).orNull
-
+    val dataLocation = shim.getDataLocation(h)
     // Hive-generated Statistics are also recorded in ignoredProperties
     val ignoredProperties = scala.collection.mutable.Map.empty[String, String]
     for (key <- HiveStatisticsProperties; value <- properties.get(key)) {
@@ -513,7 +518,7 @@ private[hive] class HiveClientImpl(
       createTime = h.getTTable.getCreateTime.toLong * 1000,
       lastAccessTime = h.getLastAccessTime.toLong * 1000,
       storage = CatalogStorageFormat(
-        locationUri = shim.getDataLocation(h).map(CatalogUtils.stringToURI),
+        locationUri = dataLocation.map(CatalogUtils.stringToURI),
         // To avoid ClassNotFound exception, we try our best to not get the format class, but get
         // the class name directly. However, for non-native tables, there is no interface to get
         // the format class name, so we may still throw ClassNotFound in this case.
@@ -526,7 +531,15 @@ private[hive] class HiveClientImpl(
         serde = Option(h.getSerializationLib),
         compressed = h.getTTable.getSd.isCompressed,
         properties = Option(h.getTTable.getSd.getSerdeInfo.getParameters)
-          .map(_.asScala.toMap).orNull
+          .map { params =>
+            // BDP FIX, for partition table,
+            // the path param of `Storage Desc Params` is a invalid path
+            // should use Hive `dataLocation` replace it
+            if (params.containsKey("path")) {
+              params.put("path", dataLocation.getOrElse(params.get("path")))
+            }
+            params.asScala.toMap
+          }.orNull
       ),
       // For EXTERNAL_TABLE, the table properties has a particular field "EXTERNAL". This is added
       // in the function toHiveTable.
@@ -786,6 +799,10 @@ private[hive] class HiveClientImpl(
    * Runs the specified SQL query using Hive.
    */
   override def runSqlHive(sql: String): Seq[String] = {
+    notAllowedSql.foreach(s => if (s.findFirstIn(sql).isDefined) {
+      throw new Exception(s"not allowed sql, key:$s")
+    })
+
     val maxResults = 100000
     val results = runHive(sql, maxResults)
     // It is very confusing when you only get back some of the results...
@@ -984,7 +1001,8 @@ private[hive] class HiveClientImpl(
     }
     client.getAllDatabases.asScala.filterNot(_ == "default").foreach { db =>
       logDebug(s"Dropping Database: $db")
-      client.dropDatabase(db, true, false, true)
+      // BDP: drop database is not allowed
+      // client.dropDatabase(db, true, false, true)
     }
   }
 }
@@ -1003,7 +1021,11 @@ private[hive] object HiveClientImpl extends Logging {
   /** Get the Spark SQL native DataType from Hive's FieldSchema. */
   private def getSparkSQLDataType(hc: FieldSchema): DataType = {
     try {
-      CatalystSqlParser.parseDataType(hc.getType)
+      var hiveDataType = hc.getType
+      if (hiveDataType == "void") {
+        hiveDataType = "string"
+      }
+      CatalystSqlParser.parseDataType(hiveDataType)
     } catch {
       case e: ParseException =>
         throw new SparkException(
@@ -1065,7 +1087,27 @@ private[hive] object HiveClientImpl extends Logging {
     val (partCols, schema) = table.schema.map(toHiveColumn).partition { c =>
       table.partitionColumnNames.contains(c.getName)
     }
-    hiveTable.setFields(schema.asJava)
+    // after SPARK-19279, it is not allowed to create a hive table with an empty schema,
+    // so here we should not add a default col schema
+    if (schema.isEmpty && DDLUtils.isDatasourceTable(table)) {
+      // This is a hack to preserve existing behavior. Before Spark 2.0, we do not
+      // set a default serde here (this was done in Hive), and so if the user provides
+      // an empty schema Hive would automatically populate the schema with a single
+      // field "col". However, after SPARK-14388, we set the default serde to
+      // LazySimpleSerde so this implicit behavior no longer happens. Therefore,
+      // we need to do it in Spark ourselves.
+      hiveTable.setFields(
+        Seq(new FieldSchema("col", "array<string>", "from deserializer")).asJava)
+    } else {
+      // BDP, fix create view xxx as select null as col from xxTb
+      val hiveSchema = schema.map { col =>
+        if (col.getType == "null") {
+          col.setType("string")
+        }
+        col
+      }
+      hiveTable.setFields(hiveSchema.asJava)
+    }
     hiveTable.setPartCols(partCols.asJava)
     Option(table.owner).filter(_.nonEmpty).orElse(userName).foreach(hiveTable.setOwner)
     hiveTable.setCreateTime(MILLISECONDS.toSeconds(table.createTime).toInt)

@@ -40,7 +40,7 @@ import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.catalyst.util.{CaseInsensitiveMap, DateTimeUtils}
 import org.apache.spark.sql.execution.{ProjectExec, SortExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StringType
+import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
@@ -126,19 +126,26 @@ object FileFormatWriter extends Logging {
 
     val caseInsensitiveOptions = CaseInsensitiveMap(options)
     // BDP Modify, Parquet data source support null data type.
-    val dataSchema = dataColumns.toStructType
+    // val dataSchema = dataColumns.toStructType
     // DataSourceUtils.verifySchema(fileFormat, dataSchema)
 
+    // BDP HACK! change NullType to BooleanType since since parquet does not support NullType
+    val nullSafeColumns: Seq[Attribute] =
+      dataColumns.map {
+        case a: AttributeReference if a.dataType == NullType =>
+          a.copy(dataType = StringType)(a.exprId, a.qualifier)
+        case a: Attribute => a
+      }
     // Note: prepareWrite has side effect. It sets "job".
-    val outputWriterFactory =
-      fileFormat.prepareWrite(sparkSession, job, caseInsensitiveOptions, dataSchema)
+    val outputWriterFactory = fileFormat.prepareWrite(sparkSession, job,
+      caseInsensitiveOptions, nullSafeColumns.toStructType)
 
     val description = new WriteJobDescription(
       uuid = UUID.randomUUID.toString,
       serializableHadoopConf = new SerializableConfiguration(job.getConfiguration),
       outputWriterFactory = outputWriterFactory,
       allColumns = outputSpec.outputColumns,
-      dataColumns = dataColumns,
+      dataColumns = nullSafeColumns,
       partitionColumns = partitionColumns,
       bucketIdExpression = bucketIdExpression,
       path = outputSpec.outputPath,
