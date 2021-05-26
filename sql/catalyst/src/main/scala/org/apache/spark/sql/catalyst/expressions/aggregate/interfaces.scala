@@ -23,6 +23,8 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.types._
 
+import java.util.Objects
+
 /** The mode of an [[AggregateFunction]]. */
 sealed trait AggregateMode
 
@@ -73,12 +75,21 @@ object AggregateExpression {
       mode: AggregateMode,
       isDistinct: Boolean,
       filter: Option[Expression] = None): AggregateExpression = {
+    val state = if (aggregateFunction.resolved) {
+      Seq(aggregateFunction.toString, aggregateFunction.dataType,
+        aggregateFunction.nullable, mode, isDistinct)
+    } else {
+      Seq(aggregateFunction.toString, mode, isDistinct)
+    }
+    val hashCode = state.map(Objects.hashCode).foldLeft(0)((a, b) => 31 * a + b)
+
     AggregateExpression(
       aggregateFunction,
       mode,
       isDistinct,
       filter,
-      NamedExpression.newExprId)
+      ExprId(hashCode))
+      // NamedExpression.newExprId)
   }
 }
 
