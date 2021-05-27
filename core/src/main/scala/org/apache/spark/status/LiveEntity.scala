@@ -266,6 +266,7 @@ private[spark] class LiveExecutor(val executorId: String, _addTime: Long) extend
   var activeTasks = 0
   var completedTasks = 0
   var failedTasks = 0
+  var killedTasks = 0
   var totalDuration = 0L
   var totalGcTime = 0L
   var totalInputBytes = 0L
@@ -310,6 +311,7 @@ private[spark] class LiveExecutor(val executorId: String, _addTime: Long) extend
       maxTasks,
       activeTasks,
       failedTasks,
+      killedTasks,
       completedTasks,
       totalTasks,
       totalDuration,
