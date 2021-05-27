@@ -68,8 +68,8 @@ private[spark] class HistoryAppStatusStore(
       newExecutorLogs: Map[String, String]): v1.ExecutorSummary = {
     new v1.ExecutorSummary(source.id, source.hostPort, source.isActive, source.rddBlocks,
       source.memoryUsed, source.diskUsed, source.totalCores, source.maxTasks, source.activeTasks,
-      source.failedTasks, source.completedTasks, source.totalTasks, source.totalDuration,
-      source.totalGCTime, source.totalInputBytes, source.totalShuffleRead,
+      source.failedTasks, source.killedTasks, source.completedTasks, source.totalTasks,
+      source.totalDuration, source.totalGCTime, source.totalInputBytes, source.totalShuffleRead,
       source.totalShuffleWrite, source.isBlacklisted, source.maxMemory, source.addTime,
       source.removeTime, source.removeReason, newExecutorLogs, source.memoryMetrics,
       source.blacklistedInStages, source.peakMemoryMetrics, source.attributes, source.resources)
