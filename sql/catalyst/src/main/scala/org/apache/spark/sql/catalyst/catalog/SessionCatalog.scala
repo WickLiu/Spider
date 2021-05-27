@@ -1112,13 +1112,14 @@ class SessionCatalog(
    * Verify if the input partition spec has any empty value.
    */
   private def requireNonEmptyValueInPartitionSpec(specs: Seq[TablePartitionSpec]): Unit = {
-    specs.foreach { s =>
-      if (s.values.exists(v => v != null && v.isEmpty)) {
-        val spec = s.map(p => p._1 + "=" + p._2).mkString("[", ", ", "]")
-        throw new AnalysisException(
-          s"Partition spec is invalid. The spec ($spec) contains an empty partition column value")
-      }
-    }
+    // Compatible with partition is empty
+    // specs.foreach { s =>
+    // if (s.values.exists(v => v != null && v.isEmpty)) {
+    //    val spec = s.map(p => p._1 + "=" + p._2).mkString("[", ", ", "]")
+    //   throw new AnalysisException(
+    //      s"Partition spec is invalid. The spec ($spec) contains an empty partition column value")
+    //  }
+    // }
   }
 
   /**
