@@ -2731,6 +2731,23 @@ class SQLConf extends Serializable with Logging {
 
   @transient protected val reader = new ConfigReader(settings)
 
+  @transient private var localProperties: Option[InheritableThreadLocal[Properties]] = None
+
+  def setLocalProperties(localProperties: InheritableThreadLocal[Properties]) {
+    this.localProperties = Some(localProperties)
+  }
+
+  def getBDPConf[T](entry: ConfigEntry[T]): T = {
+    val key = entry.key
+    if (localProperties.isDefined) {
+      val v = Option(localProperties.get.get()).map(_.getProperty(key)).orNull
+      if (v != null) {
+        return entry.valueConverter(v)
+      }
+    }
+    getConf(entry)
+  }
+
   /** ************************ Spark SQL Params/Hints ******************* */
 
   def analyzerMaxIterations: Int = getConf(ANALYZER_MAX_ITERATIONS)
@@ -2827,7 +2844,7 @@ class SQLConf extends Serializable with Logging {
 
   def numShufflePartitions: Int = {
     if (adaptiveExecutionEnabled && coalesceShufflePartitionsEnabled) {
-      getConf(COALESCE_PARTITIONS_INITIAL_PARTITION_NUM).getOrElse(defaultNumShufflePartitions)
+      getBDPConf(COALESCE_PARTITIONS_INITIAL_PARTITION_NUM).getOrElse(defaultNumShufflePartitions)
     } else {
       defaultNumShufflePartitions
     }

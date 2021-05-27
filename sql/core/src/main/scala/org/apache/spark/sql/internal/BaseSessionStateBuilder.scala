@@ -92,11 +92,13 @@ abstract class BaseSessionStateBuilder(
       val cloned = s.conf.clone()
       if (session.sparkContext.conf.get(StaticSQLConf.SQL_LEGACY_SESSION_INIT_WITH_DEFAULTS)) {
         mergeSparkConf(cloned, session.sparkContext.conf)
+        cloned.setLocalProperties(session.sparkContext.localProperties)
       }
       cloned
     }.getOrElse {
-      val conf = new SQLConf
+      val conf = new SQLConf()
       mergeSparkConf(conf, session.sparkContext.conf)
+      conf.setLocalProperties(session.sparkContext.localProperties)
       conf
     }
   }
