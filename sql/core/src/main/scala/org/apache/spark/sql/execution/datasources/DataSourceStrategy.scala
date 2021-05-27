@@ -38,6 +38,7 @@ import org.apache.spark.sql.catalyst.plans.logical.{InsertIntoDir, InsertIntoSta
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.execution.{RowDataSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.command._
+import org.apache.spark.sql.execution.datasources.jdbc.JDBCRelation
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.StoreAssignmentPolicy
 import org.apache.spark.sql.sources._
@@ -253,7 +254,17 @@ class FindDataSourceTable(sparkSession: SparkSession) extends Rule[LogicalPlan] 
           className = table.provider.get,
           options = table.storage.properties ++ pathOption,
           catalogTable = Some(table))
-      LogicalRelation(dataSource.resolveRelation(checkFilesExist = false), table)
+      val relation = dataSource.resolveRelation(checkFilesExist = false)
+      val lr = LogicalRelation(relation, table)
+      if (relation.isInstanceOf[JDBCRelation]) {
+        val schemaMap = relation.asInstanceOf[JDBCRelation].jdbcOptions.schemaMap
+        if (schemaMap.nonEmpty) {
+          val output = lr.output.filter(ar => schemaMap.contains(ar.name))
+            .map(ar => Alias(ar, schemaMap(ar.name))())
+          return Project(output, lr)
+        }
+      }
+      lr
     })
   }
 
