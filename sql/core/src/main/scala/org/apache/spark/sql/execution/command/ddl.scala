@@ -218,7 +218,9 @@ case class DropTableCommand(
 
   override def run(sparkSession: SparkSession): Seq[Row] = {
     val catalog = sparkSession.sessionState.catalog
-    val isTempView = catalog.isTemporaryTable(tableName)
+
+    //    bdp change: remove the code which is useless and will increase the cost of hive
+    /* val isTempView = catalog.isTemporaryTable(tableName)
 
     if (!isTempView && catalog.tableExists(tableName)) {
       // If the command DROP VIEW is to drop a table or DROP TABLE is to drop a view
@@ -232,9 +234,9 @@ case class DropTableCommand(
             s"Cannot drop a table with DROP VIEW. Please use DROP TABLE instead")
         case _ =>
       }
-    }
+    } */
 
-    if (isTempView || catalog.tableExists(tableName)) {
+
       try {
        if (sparkSession.sharedState.cacheManager.isCahceTable(tableName.table)) {
          sparkSession.sharedState.cacheManager.uncacheQuery(sparkSession.table(tableName)
@@ -246,12 +248,7 @@ case class DropTableCommand(
       }
       catalog.refreshTable(tableName)
       catalog.dropTable(tableName, ifExists, purge)
-    } else if (ifExists) {
-      // no-op
-    } else {
-      throw new AnalysisException(s"Table or view not found: ${tableName.identifier}")
-    }
-    Seq.empty[Row]
+      Seq.empty[Row]
   }
 }
 

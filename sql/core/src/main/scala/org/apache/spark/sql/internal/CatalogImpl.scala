@@ -19,6 +19,7 @@ package org.apache.spark.sql.internal
 
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.control.NonFatal
+
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalog.{Catalog, Column, Database, Function, Table}
 import org.apache.spark.sql.catalyst.{DefinedByConstructorParams, FunctionIdentifier, TableIdentifier}

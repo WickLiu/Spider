@@ -78,8 +78,9 @@ private[spark] class HiveExternalCatalog(conf: SparkConf, hadoopConf: Configurat
   /**
    * A Hive client used to interact with the metastore.
    */
-  lazy val client: HiveClient = {
-    HiveUtils.newClientForMetadata(conf, hadoopConf)
+  def client: HiveClient = {
+    val index = Math.abs(Thread.currentThread().hashCode() % clientPool.length)
+    clientPool(index)
   }
 
   // Exceptions thrown by the hive client that we would like to wrap
@@ -108,7 +109,7 @@ private[spark] class HiveExternalCatalog(conf: SparkConf, hadoopConf: Configurat
    * Run some code involving `client` in a [[synchronized]] block and wrap certain
    * exceptions thrown in the process in [[AnalysisException]].
    */
-  private def withClient[T](body: => T): T = synchronized {
+  private def withClient[T](body: => T): T = client.synchronized {
     try {
       body
     } catch {
@@ -130,7 +131,7 @@ private[spark] class HiveExternalCatalog(conf: SparkConf, hadoopConf: Configurat
    * should interpret these special data source properties and restore the original table metadata
    * before returning it.
    */
-  private[hive] def getRawTable(db: String, table: String): CatalogTable = {
+  private[hive] def getRawTable(db: String, table: String): CatalogTable = withClient {
     client.getTable(db, table)
   }
 
