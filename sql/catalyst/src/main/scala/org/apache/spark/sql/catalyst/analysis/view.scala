@@ -115,8 +115,9 @@ object EliminateView extends Rule[LogicalPlan] with CastSupport {
             qualifier = attr.qualifier, explicitMetadata = Some(attr.metadata))
         case (_, originAttr) => originAttr
       }
-      val newChild = Project(newOutput, child)
-      v.copy(output = newChild.output, child = newChild)
+      /* val newChild = Project(newOutput, child)
+      v.copy(output = newChild.output, child = newChild) */
+      Project(newOutput, child)
 
     // The child should have the same output attributes with the View operator, so we simply
     // remove the View operator.
