@@ -32,7 +32,7 @@ import org.apache.hadoop.mapred.{FileInputFormat, JobConf}
 import org.apache.spark.internal.config.RDD_PARALLEL_LISTING_THRESHOLD
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.catalyst.analysis.Resolver
+import org.apache.spark.sql.catalyst.analysis.{NoSuchTableException, Resolver}
 import org.apache.spark.sql.catalyst.catalog._
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
@@ -236,9 +236,12 @@ case class DropTableCommand(
 
     if (isTempView || catalog.tableExists(tableName)) {
       try {
-        sparkSession.sharedState.cacheManager.uncacheQuery(
-          sparkSession.table(tableName), cascade = !isTempView)
+       if (sparkSession.sharedState.cacheManager.isCahceTable(tableName.table)) {
+         sparkSession.sharedState.cacheManager.uncacheQuery(sparkSession.table(tableName)
+         , cascade = true)
+       }
       } catch {
+        case _: NoSuchTableException if ifExists =>
         case NonFatal(e) => log.warn(e.toString, e)
       }
       catalog.refreshTable(tableName)

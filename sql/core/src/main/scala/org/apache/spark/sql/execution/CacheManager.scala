@@ -56,15 +56,24 @@ class CacheManager extends Logging with AdaptiveSparkPlanHelper {
   @transient @volatile
   private var cachedData = IndexedSeq[CachedData]()
 
+  @transient
+  val cacheTables = new java.util.concurrent.ConcurrentHashMap[String, Int]
+
   /** Clears all cached tables. */
   def clearCache(): Unit = this.synchronized {
     cachedData.foreach(_.cachedRepresentation.cacheBuilder.clearCache())
     cachedData = IndexedSeq[CachedData]()
+    cacheTables.clear()
   }
 
   /** Checks if the cache is empty. */
   def isEmpty: Boolean = {
     cachedData.isEmpty
+  }
+
+  // BDP modify
+  def isCahceTable(tableName: String): Boolean = {
+    !cachedData.isEmpty && cacheTables.containsKey(tableName)
   }
 
   /**
@@ -80,6 +89,9 @@ class CacheManager extends Logging with AdaptiveSparkPlanHelper {
     if (lookupCachedData(planToCache).nonEmpty) {
       logWarning("Asked to cache already cached data.")
     } else {
+      if (tableName.isDefined) {
+        cacheTables.put(tableName.get, 1)
+      }
       // Turn off AQE so that the outputPartitioning of the underlying plan can be leveraged.
       val sessionWithAqeOff = getOrCloneSessionWithAqeOff(query.sparkSession)
       val inMemoryRelation = sessionWithAqeOff.withActive {
@@ -137,7 +149,13 @@ class CacheManager extends Logging with AdaptiveSparkPlanHelper {
     this.synchronized {
       cachedData = cachedData.filterNot(cd => plansToUncache.exists(_ eq cd))
     }
-    plansToUncache.foreach { _.cachedRepresentation.cacheBuilder.clearCache(blocking) }
+    plansToUncache.foreach { cd =>
+      val tableName = cd.cachedRepresentation.cacheBuilder.tableName
+      if (tableName.isDefined) {
+        cacheTables.remove(tableName.get)
+      }
+      cd.cachedRepresentation.cacheBuilder.clearCache(blocking)
+    }
 
     // Re-compile dependent cached queries after removing the cached query.
     if (!cascade) {

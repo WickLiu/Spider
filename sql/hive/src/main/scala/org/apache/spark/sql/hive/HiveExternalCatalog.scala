@@ -65,6 +65,16 @@ private[spark] class HiveExternalCatalog(conf: SparkConf, hadoopConf: Configurat
   // This is to ensure Hive can get the Hadoop version when using the isolated classloader.
   org.apache.hadoop.util.VersionInfo.getVersion()
 
+  lazy val clientPool = {
+    var poolSize = conf.getInt("spark.bdp.hive.client.pool.size", 1)
+    if (poolSize < 1 || poolSize > 5) {
+      poolSize = 1
+    }
+    for (i <- 0 until poolSize) yield {
+      HiveUtils.newClientForMetadata(conf, hadoopConf)
+    }
+  }
+
   /**
    * A Hive client used to interact with the metastore.
    */

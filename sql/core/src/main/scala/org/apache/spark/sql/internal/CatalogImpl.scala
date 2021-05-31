@@ -19,13 +19,13 @@ package org.apache.spark.sql.internal
 
 import scala.reflect.runtime.universe.TypeTag
 import scala.util.control.NonFatal
-
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalog.{Catalog, Column, Database, Function, Table}
 import org.apache.spark.sql.catalyst.{DefinedByConstructorParams, FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog._
 import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
+import org.apache.spark.sql.execution.CachedData
 import org.apache.spark.sql.execution.command.AlterTableRecoverPartitionsCommand
 import org.apache.spark.sql.execution.datasources.{CreateTable, DataSource}
 import org.apache.spark.sql.types.StructType
@@ -472,7 +472,8 @@ class CatalogImpl(sparkSession: SparkSession) extends Catalog {
    */
   override def refreshTable(tableName: String): Unit = {
     val tableIdent = sparkSession.sessionState.sqlParser.parseTableIdentifier(tableName)
-    val tableMetadata = sessionCatalog.getTempViewOrPermanentTableMetadata(tableIdent)
+
+    /* val tableMetadata = sessionCatalog.getTempViewOrPermanentTableMetadata(tableIdent)
     val table = sparkSession.table(tableIdent)
 
     if (tableMetadata.tableType == CatalogTableType.VIEW) {
@@ -482,25 +483,34 @@ class CatalogImpl(sparkSession: SparkSession) extends Catalog {
     } else {
       // Non-temp tables: refresh the metadata cache.
       sessionCatalog.refreshTable(tableIdent)
-    }
+    } */
+    sessionCatalog.refreshTable(tableIdent)
 
     // If this table is cached as an InMemoryRelation, drop the original
     // cached version and make the new version cached lazily.
-    val cache = sparkSession.sharedState.cacheManager.lookupCachedData(table)
+    // val cache: Option[CachedData] = sparkSession.sharedState.cacheManager.lookupCachedData(table)
 
     // uncache the logical plan.
     // note this is a no-op for the table itself if it's not cached, but will invalidate all
     // caches referencing this table.
-    sparkSession.sharedState.cacheManager.uncacheQuery(table, cascade = true)
 
-    if (cache.nonEmpty) {
-      // save the cache name and cache level for recreation
-      val cacheName = cache.get.cachedRepresentation.cacheBuilder.tableName
-      val cacheLevel = cache.get.cachedRepresentation.cacheBuilder.storageLevel
+    if (sparkSession.sharedState.cacheManager.isCahceTable(tableName)) {
+      val logicalPlan = sparkSession.sessionState.catalog.lookupRelation(tableIdent)
+      val cache = sparkSession.sharedState.cacheManager.lookupCachedData(logicalPlan)
 
-      // recache with the same name and cache level.
-      sparkSession.sharedState.cacheManager.cacheQuery(table, cacheName, cacheLevel)
+      val df = Dataset.ofRows(sparkSession, logicalPlan)
+      sparkSession.sharedState.cacheManager.uncacheQuery(df, cascade = true)
+
+      if (cache.nonEmpty) {
+        // save the cache name and cache level for recreation
+        val cacheName = cache.get.cachedRepresentation.cacheBuilder.tableName
+        val cacheLevel = cache.get.cachedRepresentation.cacheBuilder.storageLevel
+
+        // recache with the same name and cache level.
+        sparkSession.sharedState.cacheManager.cacheQuery(df, cacheName, cacheLevel)
+      }
     }
+
   }
 
   /**
