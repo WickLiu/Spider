@@ -70,16 +70,24 @@ object FilePartition extends Logging {
     }
 
     val openCostInBytes = sparkSession.sessionState.conf.filesOpenCostInBytes
-    // Assign files to partitions using "Next Fit Decreasing"
-    partitionedFiles.foreach { file =>
-      if (currentSize + file.length > maxSplitBytes) {
-        closePartition()
+    // BDP: optimize partition table task. Don't understand, why defaultMaxSplitBytes <= 0 ???
+    val defaultMaxSplitBytes = sparkSession.sparkContext.defaultParallelism
+    if (defaultMaxSplitBytes <= 0) {
+      partitionedFiles.zipWithIndex.foreach { case (file, index) =>
+        partitions += FilePartition(index, Array(file))
       }
-      // Add the given file to the current partition.
-      currentSize += file.length + openCostInBytes
-      currentFiles += file
+    } else {
+      // Assign files to partitions using "Next Fit Decreasing"
+      partitionedFiles.foreach { file =>
+        if (currentSize + file.length > maxSplitBytes) {
+          closePartition()
+        }
+        // Add the given file to the current partition.
+        currentSize += file.length + openCostInBytes
+        currentFiles += file
+      }
+      closePartition()
     }
-    closePartition()
     partitions
   }
 
