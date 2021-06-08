@@ -31,7 +31,8 @@ object PartitionedFileUtil {
       isSplitable: Boolean,
       maxSplitBytes: Long,
       partitionValues: InternalRow): Seq[PartitionedFile] = {
-    if (isSplitable) {
+    val defaultMaxSplitBytes = sparkSession.sparkContext.defaultParallelism
+    if (defaultMaxSplitBytes > 0 && isSplitable) {
       (0L until file.getLen by maxSplitBytes).map { offset =>
         val remaining = file.getLen - offset
         val size = if (remaining > maxSplitBytes) maxSplitBytes else remaining
