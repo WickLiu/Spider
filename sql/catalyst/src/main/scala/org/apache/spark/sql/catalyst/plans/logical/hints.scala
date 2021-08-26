@@ -41,6 +41,8 @@ case class UnresolvedHint(name: String, parameters: Seq[Any], child: LogicalPlan
 case class ResolvedHint(child: LogicalPlan, hints: HintInfo = HintInfo())
   extends UnaryNode {
 
+  override lazy val resolved: Boolean = child.resolved
+
   override def output: Seq[Attribute] = child.output
 
   override def doCanonicalize(): LogicalPlan = child.canonicalized
@@ -115,7 +117,15 @@ object JoinStrategyHint {
     BROADCAST,
     SHUFFLE_MERGE,
     SHUFFLE_HASH,
-    SHUFFLE_REPLICATE_NL)
+    SHUFFLE_REPLICATE_NL,
+    DOUBLETYPE)
+}
+
+// add BOUBLE_TYPE hint
+case object DOUBLETYPE extends JoinStrategyHint {
+  override def displayName: String = "doubleType"
+  override def hintAliases: Set[String] = Set(
+    "DOUBLE_TYPE")
 }
 
 /**

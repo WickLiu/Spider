@@ -142,7 +142,8 @@ class HadoopDelegationTokenManagerSuite extends SparkFunSuite {
       if (kdc != null) {
         kdc.stop()
       }
-      UserGroupInformation.reset()
+      // fix, build package error
+      // UserGroupInformation.reset()
     }
   }
 }

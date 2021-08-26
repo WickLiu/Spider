@@ -22,11 +22,14 @@ import java.util.Locale
 import scala.collection.mutable
 
 import org.apache.spark.sql.AnalysisException
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Expression, IntegerLiteral, SortOrder}
+import org.apache.spark.sql.catalyst.analysis.ResolveHints.SkewedJoin
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Cast, Expression, GreaterThan, GreaterThanOrEqual, In, IntegerLiteral, LessThan, LessThanOrEqual, Literal, Not, SortOrder}
+import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.CurrentOrigin
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.DoubleType
 
 
 /**
@@ -55,6 +58,10 @@ object ResolveHints {
 
     private val hintErrorHandler = conf.hintErrorHandler
 
+    // fix hint method bug and add some operation,DOUBLE_TYPE and SKEWED_JOIN
+    // SKEWED_JOIN(join_key(left.field, right.field), skewed_values('value1', 'value2'))
+    private val SKEWED_JOIN = "SKEWED_JOIN"
+
     def resolver: Resolver = conf.resolver
 
     private def createHintInfo(hintName: String): HintInfo = {
@@ -63,7 +70,6 @@ object ResolveHints {
           _.hintAliases.map(
             _.toUpperCase(Locale.ROOT)).contains(hintName.toUpperCase(Locale.ROOT))))
     }
-
     // This method checks if given multi-part identifiers are matched with each other.
     // The [[ResolveJoinStrategyHints]] rule is applied before the resolution batch
     // in the analyzer and we cannot semantically compare them at this stage.
@@ -143,28 +149,159 @@ object ResolveHints {
       }
     }
 
-    def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperatorsUp {
-      case h: UnresolvedHint if STRATEGY_HINT_NAMES.contains(h.name.toUpperCase(Locale.ROOT)) =>
-        if (h.parameters.isEmpty) {
-          // If there is no table alias specified, apply the hint on the entire subtree.
-          ResolvedHint(h.child, createHintInfo(h.name))
-        } else {
-          // Otherwise, find within the subtree query plans to apply the hint.
-          val relationNamesInHint = h.parameters.map {
-            case tableName: String => UnresolvedAttribute.parseAttributeName(tableName)
-            case tableId: UnresolvedAttribute => tableId.nameParts
-            case unsupported => throw new AnalysisException("Join strategy hint parameter " +
-              s"should be an identifier or string but was $unsupported (${unsupported.getClass}")
-          }.toSet
-          val relationsInHintWithMatch = new mutable.HashSet[Seq[String]]
-          val applied = applyJoinStrategyHint(
-            h.child, relationNamesInHint, relationsInHintWithMatch, h.name)
+    // fix hint method bug and add some operation,DOUBLE_TYPE and SKEWED_JOIN
+    private def applyCastHint(expression: Expression, castFieldId: Set[String]): Expression = {
+      val newExpression = expression match {
+        case attribute: UnresolvedAttribute if castFieldId.contains(attribute.name) =>
+          Cast(attribute, DoubleType)
+        case other => other
+      }
+      newExpression
+    }
 
-          // Filters unmatched relation identifiers in the hint
-          val unmatchedIdents = relationNamesInHint -- relationsInHintWithMatch
-          hintErrorHandler.hintRelationsNotFound(h.name, h.parameters, unmatchedIdents)
-          applied
+    private def getTbAlias(plan: LogicalPlan, tableName: String): String = {
+      plan.map(lp => lp)
+        .filter(_.isInstanceOf[SubqueryAlias])
+        .map(_.asInstanceOf[SubqueryAlias])
+        .filter(_.child.isInstanceOf[UnresolvedRelation])
+        .filter{ sa =>
+          sa.child.asInstanceOf[UnresolvedRelation].tableName == tableName
+        }.map(s => s"${s.alias}.").headOption.getOrElse("")
+    }
+
+    private def applySkewedJoinHint(plan: LogicalPlan, skewedJoin: SkewedJoin): LogicalPlan = {
+      // scalastyle:off println
+      var recurse = true
+      val newNode = CurrentOrigin.withOrigin(plan.origin) {
+        plan match {
+          case Join(left, right, joinType, condition, hint) if condition.isDefined =>
+            val joinKey = skewedJoin.joinKey
+            val hasLeftTb = left.find { lp =>
+              lp.isInstanceOf[UnresolvedRelation] &&
+                lp.asInstanceOf[UnresolvedRelation].tableName == joinKey.leftTable
+            }.isDefined
+
+            val hasRightTb = right.find { lp =>
+              lp.isInstanceOf[UnresolvedRelation] &&
+                lp.asInstanceOf[UnresolvedRelation].tableName == joinKey.rightTable
+            }.isDefined
+
+            val leftField = getTbAlias(left, joinKey.leftTable) + joinKey.leftField
+            val rightField = getTbAlias(right, joinKey.rightTable) + joinKey.rightField
+            val joinKeys = condition.get.map(expr => expr)
+              .filter(_.isInstanceOf[UnresolvedAttribute])
+              .map(_.asInstanceOf[UnresolvedAttribute].name)
+              .filter(n => n.endsWith(joinKey.leftField) || n.endsWith(joinKey.rightField))
+
+            val newPlan = if (hasLeftTb && hasRightTb && joinKeys.length >= 2) {
+              val inList = skewedJoin.skewedValues.map(Literal(_))
+              val left1 = Filter(Not(In(UnresolvedAttribute(leftField), inList)), left)
+              val right1 = Filter(Not(In(UnresolvedAttribute(rightField), inList)), right)
+              val left2 = Filter(In(UnresolvedAttribute(leftField), inList), left)
+              val right2 = Filter(In(UnresolvedAttribute(rightField), inList), right)
+
+              val join1 = Join(left1, right1, joinType, condition, hint)
+              // use mapjoin
+              val join2 = Join(ResolvedHint(left2, HintInfo()), ResolvedHint(right2, HintInfo()), Inner, condition, hint)
+              Union(Seq(join1, join2))
+            } else plan
+            ResolvedHint(newPlan)
+          case _: ResolvedHint | _: View | _: With | _: SubqueryAlias =>
+            recurse = false
+            plan
+
+          case _ =>
+            plan
         }
+      }
+      if ((plan fastEquals newNode) && recurse) {
+        newNode.mapChildren(child => applySkewedJoinHint(child, skewedJoin))
+      } else {
+        newNode
+      }
+    }
+
+    def apply(plan: LogicalPlan): LogicalPlan = {
+      var castFieldId: Set[String] = Set()
+
+      val newNode = plan transformUp {
+        case h: UnresolvedHint if STRATEGY_HINT_NAMES.contains(h.name.toUpperCase(Locale.ROOT)) =>
+          if (h.parameters.isEmpty) {
+            // If there is no table alias specified, apply the hint on the entire subtree.
+            ResolvedHint(h.child, createHintInfo(h.name))
+          } else {
+            // Otherwise, find within the subtree query plans to apply the hint.
+            val relationNamesInHint = h.parameters.map {
+              case tableName: String => UnresolvedAttribute.parseAttributeName(tableName)
+              case tableId: UnresolvedAttribute => tableId.nameParts
+              case unsupported => throw new AnalysisException("Join strategy hint parameter " +
+                s"should be an identifier or string but was $unsupported (${unsupported.getClass}")
+            }.toSet
+            val relationsInHintWithMatch = new mutable.HashSet[Seq[String]]
+            val applied = applyJoinStrategyHint(
+              h.child, relationNamesInHint, relationsInHintWithMatch, h.name)
+
+            // Filters unmatched relation identifiers in the hint
+            val unmatchedIdents = relationNamesInHint -- relationsInHintWithMatch
+            hintErrorHandler.hintRelationsNotFound(h.name, h.parameters, unmatchedIdents)
+            applied
+          }
+
+        case d: UnresolvedHint if STRATEGY_HINT_NAMES.contains(d.name.toUpperCase(Locale.ROOT)) =>
+          if (d.parameters.isEmpty) {
+            ResolvedHint(d.child, createHintInfo(d.name))
+          } else {
+            castFieldId ++= d.parameters.map {
+              case fieldId: String => fieldId
+              case fieldId: UnresolvedAttribute => fieldId.name
+              case unsupported => throw new AnalysisException("CAST hint parameter should be" +
+                s" string but was $unsupported (${unsupported.getClass}")
+            }.toSet
+            ResolvedHint(d.child, createHintInfo(d.name))
+          }
+
+        case h: UnresolvedHint if SKEWED_JOIN == h.name.toUpperCase(Locale.ROOT) =>
+          val paramMap = h.parameters.map {
+            case UnresolvedFunction(funId, children, _, _) =>
+              (funId.funcName, children.map {
+                case ua: UnresolvedAttribute => ua.name
+                case other => other.toString
+              })
+            case unsupported => throw new AnalysisException("SKEWED hint parameter should be" +
+              s" Function but was $unsupported (${unsupported.getClass}")
+          }.toMap
+          val joinKey = paramMap.get("join_key")
+          val skewedValues = paramMap.get("skewed_values")
+          if (joinKey.nonEmpty && joinKey.get.length == 2
+            && skewedValues.nonEmpty && skewedValues.get.length > 0) {
+            applySkewedJoinHint(h.child,
+              SkewedJoin(JoinKey(joinKey.get(0), joinKey.get(1)), skewedValues.get))
+          } else {
+            ResolvedHint(h.child)
+          }
+      }
+
+      if (castFieldId.isEmpty) {
+        newNode
+      } else {
+        plan transformExpressions  {
+          case SortOrder(child, direction, nullOrdering, sameOrderExpressions) =>
+            SortOrder(applyCastHint(child, castFieldId),
+              direction, nullOrdering, sameOrderExpressions)
+
+          case GreaterThan(left, right) =>
+            GreaterThan(applyCastHint(left, castFieldId), applyCastHint(right, castFieldId))
+
+          case GreaterThanOrEqual(left, right) =>
+            GreaterThanOrEqual(applyCastHint(left, castFieldId), applyCastHint(right, castFieldId))
+
+          case LessThan(left, right) =>
+            LessThan(applyCastHint(left, castFieldId), applyCastHint(right, castFieldId))
+
+          case LessThanOrEqual(left, right) =>
+            LessThanOrEqual(applyCastHint(left, castFieldId), applyCastHint(right, castFieldId))
+        }
+      }
     }
   }
 
@@ -278,4 +415,12 @@ object ResolveHints {
         h.child
     }
   }
+
+  case class JoinKey(leftTbField: String, rightTbField: String) {
+    val leftTable: String = leftTbField.split("\\.")(0)
+    val leftField: String = leftTbField.split("\\.")(1)
+    val rightTable: String = rightTbField.split("\\.")(0)
+    val rightField: String = rightTbField.split("\\.")(1)
+  }
+  case class SkewedJoin(joinKey: JoinKey, skewedValues: Seq[String])
 }

@@ -122,6 +122,10 @@ trait CheckAnalysis extends PredicateHelper {
       case AlterTable(_, _, u: UnresolvedV2Relation, _) =>
         failAnalysis(s"Table not found: ${u.originalNameParts.quoted}")
 
+      // [SPARK-35673] Spark fails on unrecognized hint in subquery
+      case u: UnresolvedHint =>
+        u.failAnalysis(s"Hint not found: ${u.name}")
+
       case operator: LogicalPlan =>
         // Check argument data types of higher-order functions downwards first.
         // If the arguments of the higher-order functions are resolved but the type check fails,

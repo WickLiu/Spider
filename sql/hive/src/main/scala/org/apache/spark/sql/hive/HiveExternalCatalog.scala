@@ -589,7 +589,8 @@ private[spark] class HiveExternalCatalog(conf: SparkConf, hadoopConf: Configurat
     assert(tableDefinition.identifier.database.isDefined)
     val db = tableDefinition.identifier.database.get
     requireTableExists(db, tableDefinition.identifier.table)
-    verifyTableProperties(tableDefinition)
+    // BDP FIX: allow alter spark.sql.*
+    // verifyTableProperties(tableDefinition)
 
     if (tableDefinition.tableType == VIEW) {
       client.alterTable(tableDefinition)

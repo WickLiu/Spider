@@ -380,7 +380,8 @@ class KafkaTestUtils(
       kdc.stop()
       kdc = null
     }
-    UserGroupInformation.reset()
+    // fix, build package error
+    // UserGroupInformation.reset()
     teardownKrbDebug()
   }
 
